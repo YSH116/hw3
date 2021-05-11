@@ -1,0 +1,61 @@
+inline double length(int16_t * DataXYZ);
+inline double square(double x);
+
+void detect_angle(){
+    int16_t ref_pDataXYZ[3] = {0, 0, 0};    //ref value
+    int16_t pDataXYZ[3],arcDataXYZ[3] = {0};
+    double theta = 0, cos_theta = 0;
+    //char buffer[200];
+
+    //set ref acc value 
+    initled = 1;
+    ThisThread::sleep_for(2s);
+    BSP_ACCELERO_AccGetXYZ(ref_pDataXYZ);
+    initled = 0;
+
+    //start detect angle 
+    tiltled = 1;
+    // printf("value of ref_pDataXYZ = %d, %d, %d\n", ref_pDataXYZ[0], ref_pDataXYZ[1], ref_pDataXYZ[2]);
+    
+    while (angle_key){
+        BSP_ACCELERO_AccGetXYZ(pDataXYZ);
+        // printf("%value of pDataXYZ = %d, %d, %d\n", pDataXYZ[0], pDataXYZ[1], pDataXYZ[2]);
+        for (int i = 0; i < 3; i++)
+            arcDataXYZ[i] = pDataXYZ[i]- ref_pDataXYZ[i];
+
+        cos_theta = (square(length(ref_pDataXYZ)) + square(length(pDataXYZ)) - square(length(arcDataXYZ))) / (2 * length(ref_pDataXYZ) * length(pDataXYZ));
+        //printf("cos_theta: %lf\n", cos_theta);
+
+        if (cos_theta <= 1.00 && cos_theta >= -1.00){
+            theta = acos(cos_theta) * 180 / 3.141593;
+            printf("angle: %lf\n", theta);
+        }
+        else if (cos_theta > 1.00){
+            theta = acos(1.00) * 180 / 3.141593;
+            printf("angle: %lf\n", theta);
+        }
+        else if (cos_theta < -1.00){
+            theta = acos(-1.00) * 180 / 3.141593;
+            printf("angle: %lf\n", theta);
+        }
+        if (theta > angle_threshold){
+            tiltled = 0;
+			angle_key = false;
+        }
+    }
+    
+}
+
+inline double length(int16_t * DataXYZ){
+    double x, y, z, ans;
+    x = double(DataXYZ[0])/100;
+    y = double(DataXYZ[1])/100;
+    z = double(DataXYZ[2])/100;
+    ans = square(x) + square(y) + square(z);
+    return ans;
+}
+
+inline double square(double x){
+    return x * x;
+};
+

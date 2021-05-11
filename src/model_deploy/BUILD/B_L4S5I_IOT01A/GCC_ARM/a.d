@@ -1,0 +1,2 @@
+BUILD/B_L4S5I_IOT01A/GCC_ARM/a.o: a.cpp \
+ BUILD/B_L4S5I_IOT01A/GCC_ARM/mbed_config.h
