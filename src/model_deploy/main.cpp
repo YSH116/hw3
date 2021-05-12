@@ -13,6 +13,9 @@
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
 #include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/version.h"
+#include "MQTTNetwork.h"
+#include "MQTTmbed.h"
+#include "MQTTClient.h"
 
 uLCD_4DGL uLCD(D1, D0, D2);
 InterruptIn btn(USER_BUTTON);
@@ -25,28 +28,45 @@ RPCFunction g(&gesture_UI, "g");
 void angle_det(Arguments *in, Reply *out);
 RPCFunction a(&angle_det, "a");
 void tf(); // detect gesture to select the maximum angle 
-void tilt();
 void angle();
+
+WiFiInterface *wifi;
+void messageArrived(MQTT::MessageData& md);
+void publish_message(MQTT::Client<MQTTNetwork, Countdown>* client);
+void publish_over(MQTT::Client<MQTTNetwork, Countdown>* client);
+void close_mqtt();
+Thread mqtt_thread(osPriorityHigh);
+EventQueue mqtt_queue;
+EventQueue queue;
 
 Thread gesture_thread;
 Thread angle_thread;
+Thread over;
 // Create an area of memory to use for input, output, and intermediate arrays.
 // The size of this will depend on the model you're using, and may need to be
 // determined by experimentation.
 constexpr int kTensorArenaSize = 60 * 1024;
 uint8_t tensor_arena[kTensorArenaSize];
-
+double theta = 0;
 double vector_length(int16_t *DataXYZ);
 int curr_angle = 30;
+int num_angle = 0;
 bool sel = false;
 bool UI_mode = false;
 bool tilt_mode = false;
+bool go = false;
+volatile int message_num = 0;
+volatile int arrivedcount = 0;
+volatile bool closed = false;
 
-void tilt() { 
-  sel = true; 
-  printf("select_angle: %d\n", curr_angle);
-  //uLCD.printf("select_angle: %d\n", curr_angle);
-}
+
+const char* topic = "Mbed";
+
+  // wifi = WiFiInterface::get_default_instance();
+  NetworkInterface* net; //= wifi;
+    MQTTNetwork mqttNetwork(net);
+    MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
+
 
 void gesture_UI(Arguments *in, Reply *out) { // RPC1 CALL
     printf("UI_mode\n");
@@ -59,11 +79,12 @@ void angle_det(Arguments *in, Reply *out) { // RPC2 CALL
     printf("tilt_mode\n");
     tilt_mode = true;
     angle_thread.start(&angle);
+    go = true;
 }
 
 void angle() {
     int16_t pDataXYZ[3] = {0}, stationary[3] = {0};
-    double theta = 0, cos = 0;
+    double cos = 0;
 
     ThisThread::sleep_for(3s);
     BSP_ACCELERO_AccGetXYZ(stationary); // acc of stationary
@@ -72,10 +93,11 @@ void angle() {
     led2 = 1;
     while (tilt_mode) {
       BSP_ACCELERO_AccGetXYZ(pDataXYZ);
-      printf("current_acc: %d, %d, %d ", pDataXYZ[0], pDataXYZ[1], pDataXYZ[2]);
+      //printf("current_acc: %d, %d, %d ", pDataXYZ[0], pDataXYZ[1], pDataXYZ[2]);
       cos = (pDataXYZ[0]*stationary[0] + pDataXYZ[1]*stationary[1] + pDataXYZ[2]*stationary[2]) / (vector_length(pDataXYZ) * vector_length(stationary));
       theta = acos(cos) * 180 / 3.1415926;
-      printf("and theta = %lf\n", theta);
+      printf("Theta = %lf\n", theta);
+      ThisThread::sleep_for(100ms);
     }
 }
 
@@ -96,13 +118,67 @@ int main() {
    FILE *devin = fdopen(&pc, "r");
    FILE *devout = fdopen(&pc, "w");
    
-   while(1) {
-      btn.rise(&tilt);
+   wifi = WiFiInterface::get_default_instance();
+    if (!wifi) {
+        printf("ERROR: No WiFiInterface found.\r\n");
+        return -1;
+    }
+
+
+    printf("\nConnecting to %s...\r\n", MBED_CONF_APP_WIFI_SSID);
+    int ret = wifi->connect(MBED_CONF_APP_WIFI_SSID, MBED_CONF_APP_WIFI_PASSWORD, NSAPI_SECURITY_WPA_WPA2);
+    if (ret != 0) {
+        printf("\nConnection error: %d\r\n", ret);
+        return -1;
+    }
+
+
+    // NetworkInterface* net = wifi;
+    // MQTTNetwork mqttNetwork(net);
+    // MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
+
+    //TODO: revise host to your IP
+    const char* host = "172.20.10.8";
+    printf("Connecting to TCP network...\r\n");
+
+    SocketAddress sockAddr;
+    sockAddr.set_ip_address(host);
+    sockAddr.set_port(1883);
+
+    printf("address is %s/%d\r\n", (sockAddr.get_ip_address() ? sockAddr.get_ip_address() : "None"),  (sockAddr.get_port() ? sockAddr.get_port() : 0) ); //check setting
+
+    int rc = mqttNetwork.connect(sockAddr);//(host, 1883);
+    if (rc != 0) {
+            printf("Connection error.");
+            return -1;
+    }
+    printf("Successfully connected!\r\n");
+
+    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+    data.MQTTVersion = 3;
+    data.clientID.cstring = "Mbed";
+
+    if ((rc = client.connect(data)) != 0){
+            printf("Fail to connect MQTT\r\n");
+    }
+    if (client.subscribe(topic, MQTT::QOS0, messageArrived) != 0){
+            printf("Fail to subscribe\r\n");
+    }
+    mqtt_thread.start(callback(&mqtt_queue, &EventQueue::dispatch_forever));
+    over.start(callback(&queue, &EventQueue::dispatch_forever));
+    
+    while(1) {
       if (sel) {
         led1 = 0;
         UI_mode = false;
       }
+      btn.rise(mqtt_queue.event(&publish_message, &client));
       memset(buf, 0, 256);      // clear buffer
+      
+      if (go) {
+      queue.call(queue.event(&publish_over, &client));
+      if (num_angle > 10) over.terminate();
+      }
 
       for(int i=0; ; i++) {
             char recv = fgetc(devin);
@@ -115,7 +191,89 @@ int main() {
       //Call the static call method on the RPC class
       RPC::call(buf, outbuf);
       printf("%s\r\n", outbuf);
-   }
+    }
+
+    int num = 0;
+    while (num != 5) {
+            client.yield(100);
+            ++num;
+    }
+
+    while (1) {
+      if (closed) break;
+      client.yield(500);
+      ThisThread::sleep_for(500ms);
+    }
+
+    printf("Ready to close MQTT Network......\n");
+
+    if ((rc = client.unsubscribe(topic)) != 0) {
+      printf("Failed: rc from unsubscribe was %d\n", rc);
+    }
+    if ((rc = client.disconnect()) != 0) {
+    printf("Failed: rc from disconnect was %d\n", rc);
+    }
+
+    mqttNetwork.disconnect();
+    printf("Successfully closed!\n");
+    return 0;
+}
+
+void messageArrived(MQTT::MessageData& md) {
+    MQTT::Message &message = md.message;
+    char msg[300];
+    sprintf(msg, "Message arrived: QoS%d, retained %d, dup %d, packetID %d\r\n", message.qos, message.retained, message.dup, message.id);
+    printf(msg);
+    ThisThread::sleep_for(1000ms);
+    char payload[300];
+    sprintf(payload, "Payload %.*s\r\n", message.payloadlen, (char*)message.payload);
+    printf(payload);
+    ++arrivedcount;
+}
+
+void publish_message(MQTT::Client<MQTTNetwork, Countdown>* client) {
+    message_num++;
+    MQTT::Message message;
+    char buff[100];
+    
+    sel = true; 
+    uLCD.cls();
+    uLCD.printf("select_angle: %d\n", curr_angle);
+    sprintf(buff, "select_angle: %d\n", curr_angle);
+    message.qos = MQTT::QOS0;
+    message.retained = false;
+    message.dup = false;
+    message.payload = (void*) buff;
+    message.payloadlen = strlen(buff) + 1;
+    int rc = client->publish(topic, message);
+    printf("rc:  %d\r\n", rc);
+    printf("%s\r\n", buff);
+}
+
+void publish_over(MQTT::Client<MQTTNetwork, Countdown>* client) {
+    message_num++;
+    MQTT::Message message;
+    char buff[100];
+  
+    while (num_angle < 10){
+      if (int(theta) >= curr_angle) {
+        printf("a");
+        sprintf(buff, "over_angle: %lf\n", theta);
+        message.qos = MQTT::QOS0;
+        message.retained = false;
+        message.dup = false;
+        message.payload = (void*) buff;
+        message.payloadlen = strlen(buff) + 1;
+        num_angle++;
+        int rc = client->publish(topic, message);
+        printf("rc:  %d\r\n", rc);
+        printf("%s\r\n", buff);
+      }
+    }
+}
+
+void close_mqtt() {
+    closed = true;
 }
 
 // Return the result of the last prediction
@@ -177,7 +335,7 @@ void tf() {
         "Model provided is schema version %d not equal "
         "to supported version %d.",
         model->version(), TFLITE_SCHEMA_VERSION);
-    return ;
+    return;
   }
 
   // Pull in only the operation implementations we need.
@@ -256,10 +414,11 @@ void tf() {
 
     // Produce an output
     if (gesture_index < label_num) {
-      printf("current_angle: %d\n", curr_angle);
       //error_reporter->Report(config.output_message[gesture_index]);
       if (curr_angle == 60) break;
       else curr_angle += 5;
+      printf("select_angle: %d\n", curr_angle);
+      uLCD.printf("select_angle: %d\n", curr_angle);
     }
   }
 }
