@@ -2,6 +2,7 @@
 根據題意，我們得知有gesture_UI和tilt_angle兩個模式。因此先將RPCfunction各自連到一個Thread，再用各自的Thread分別控制一個function。
 
 流程+結果：
+  我的main.cpp在~/ee2405/hw3/src/model_deploy內。
   先確認在python執行的terminal上會顯示與mbed連結到同一網路，在cpp的terminal執行screen的指令也會先顯示有連結到同一ip。
   首先先用MQTT將PC和MBED做連結並顯示於螢幕，再經由USER輸入RPC指令(/g/run)啟動gesture_UI的模式(同時顯示LED1代表)，開始偵測手勢。當每次偵測到LAB8任何一項手勢，即開始將門檻角度增加五度，起始值為30度，
 並顯示於液晶螢幕與與screen上。
