@@ -28,7 +28,8 @@ RPCFunction g(&gesture_UI, "g");
 void angle_det(Arguments *in, Reply *out);
 RPCFunction a(&angle_det, "a");
 void tf(); // detect gesture to select the maximum angle 
-void angle();
+void angle(); 
+Ticker flip;
 
 WiFiInterface *wifi;
 void messageArrived(MQTT::MessageData& md);
@@ -59,14 +60,7 @@ volatile int message_num = 0;
 volatile int arrivedcount = 0;
 volatile bool closed = false;
 
-
 const char* topic = "Mbed";
-
-  // wifi = WiFiInterface::get_default_instance();
-  NetworkInterface* net; //= wifi;
-    MQTTNetwork mqttNetwork(net);
-    MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
-
 
 void gesture_UI(Arguments *in, Reply *out) { // RPC1 CALL
     printf("UI_mode\n");
@@ -98,6 +92,13 @@ void angle() {
       theta = acos(cos) * 180 / 3.1415926;
       printf("Theta = %lf\n", theta);
       ThisThread::sleep_for(100ms);
+      if (num_angle > 10) {
+        over.terminate(); 
+        tilt_mode = 0;
+        led2 = 0;
+        sel = 0;
+      }
+
     }
 }
 
@@ -133,9 +134,9 @@ int main() {
     }
 
 
-    // NetworkInterface* net = wifi;
-    // MQTTNetwork mqttNetwork(net);
-    // MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
+    NetworkInterface* net = wifi;
+    MQTTNetwork mqttNetwork(net);
+    MQTT::Client<MQTTNetwork, Countdown> client(mqttNetwork);
 
     //TODO: revise host to your IP
     const char* host = "172.20.10.8";
@@ -159,10 +160,10 @@ int main() {
     data.clientID.cstring = "Mbed";
 
     if ((rc = client.connect(data)) != 0){
-            printf("Fail to connect MQTT\r\n");
+      printf("Fail to connect MQTT\r\n");
     }
     if (client.subscribe(topic, MQTT::QOS0, messageArrived) != 0){
-            printf("Fail to subscribe\r\n");
+      printf("Fail to subscribe\r\n");
     }
     mqtt_thread.start(callback(&mqtt_queue, &EventQueue::dispatch_forever));
     over.start(callback(&queue, &EventQueue::dispatch_forever));
@@ -175,10 +176,7 @@ int main() {
       btn.rise(mqtt_queue.event(&publish_message, &client));
       memset(buf, 0, 256);      // clear buffer
       
-      if (go) {
-      queue.call(queue.event(&publish_over, &client));
-      if (num_angle > 10) over.terminate();
-      }
+      flip.attach(queue.event(&publish_over, &client), 100ms);
 
       for(int i=0; ; i++) {
             char recv = fgetc(devin);
@@ -254,26 +252,23 @@ void publish_over(MQTT::Client<MQTTNetwork, Countdown>* client) {
     message_num++;
     MQTT::Message message;
     char buff[100];
-  
-    while (num_angle < 10){
-      if (int(theta) >= curr_angle) {
-        printf("a");
-        sprintf(buff, "over_angle: %lf\n", theta);
-        message.qos = MQTT::QOS0;
-        message.retained = false;
-        message.dup = false;
-        message.payload = (void*) buff;
-        message.payloadlen = strlen(buff) + 1;
-        num_angle++;
-        int rc = client->publish(topic, message);
-        printf("rc:  %d\r\n", rc);
-        printf("%s\r\n", buff);
-      }
-    }
+    
+    if (int(theta) >= curr_angle) {
+      sprintf(buff, "over_angle: %lf\n", theta);
+      message.qos = MQTT::QOS0;
+      message.retained = false;
+      message.dup = false;
+      message.payload = (void*) buff;
+      message.payloadlen = strlen(buff) + 1;
+      num_angle++;
+      int rc = client->publish(topic, message);
+      printf("rc:  %d\r\n", rc);
+      printf("%s\r\n", buff);
+  }
 }
 
 void close_mqtt() {
-    closed = true;
+  closed = true;
 }
 
 // Return the result of the last prediction
@@ -387,7 +382,6 @@ void tf() {
   error_reporter->Report("Set up successful...\n");
 
   while (UI_mode) {
-
     // Attempt to read new data from the accelerometer
     got_data = ReadAccelerometer(error_reporter, model_input->data.f,
                                  input_length, should_clear_buffer);
